@@ -1,0 +1,220 @@
+From 2e0ff69673ef7767bcdbf49829b861739b742a9b Mon Sep 17 00:00:00 2001
+From: Peter Lobsinger <peter@tecton.ai>
+Date: Wed, 30 Jul 2025 23:05:59 -0400
+Subject: [PATCH 1/4] Use the tool interpreter to build PEX archives
+
+The target interpreter might not work all the time. In a cross-build,
+the target interpreter will be for the target OS and the target
+architecture, which will not match the host OS and/or architecture.
+---
+ py/private/py_pex_binary.bzl |  1 -
+ py/tools/pex/main.py         | 13 ++++---------
+ 2 files changed, 4 insertions(+), 10 deletions(-)
+
+diff --git a/py/private/py_pex_binary.bzl b/py/private/py_pex_binary.bzl
+index 9ee01fee..5721274c 100644
+--- a/py/private/py_pex_binary.bzl
++++ b/py/private/py_pex_binary.bzl
+@@ -101,7 +101,6 @@ def _py_python_pex_impl(ctx):
+     )
+     args.add(binary[DefaultInfo].files_to_run.executable, format = "--executable=%s")
+     args.add(ctx.attr.python_shebang, format = "--python-shebang=%s")
+-    args.add(py_toolchain.python, format = "--python=%s")
+ 
+     py_version = py_toolchain.interpreter_version_info
+     args.add_all(
+diff --git a/py/tools/pex/main.py b/py/tools/pex/main.py
+index 5c699fd7..7a188495 100644
+--- a/py/tools/pex/main.py
++++ b/py/tools/pex/main.py
+@@ -9,7 +9,6 @@
+ 
+ import sys
+ from pex.pex_builder import Check,PEXBuilder
+-from pex.interpreter import PythonInterpreter
+ from pex.interpreter_constraints import InterpreterConstraint
+ from pex.layout import Layout
+ from pex.dist_metadata import Distribution
+@@ -37,13 +36,6 @@ def __call__(self, parser, namespace, value, option_str=None):
+     "immediately and not save it to a file.",
+ )
+ 
+-parser.add_argument(
+-    "--python",
+-    dest="python",
+-    required=True
+-)
+-
+-
+ parser.add_argument(
+     "--python-version-constraint",
+     dest="constraints",
+@@ -128,7 +120,10 @@ def __call__(self, parser, namespace, value, option_str=None):
+ 
+ 
+ pex_builder = PEXBuilder(
+-    interpreter=PythonInterpreter.from_binary(options.python),
++    # Build the PEX artifact using the current interpreter; we know it works in cfg=exec
++    # because that's how we're already running. Interpreters inferred by other means might
++    # not work in cross-builds.
++    interpreter=None,
+ )
+ 
+ 
+
+From c597a2fccdf429be2a7940a3a77429ee892019cf Mon Sep 17 00:00:00 2001
+From: Peter Lobsinger <peter@tecton.ai>
+Date: Wed, 30 Jul 2025 23:42:09 -0400
+Subject: [PATCH 2/4] Add cross-builds test for py_pex_binary
+
+---
+ py/tests/py-pex-binary/BUILD.bazel | 40 ++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/py/tests/py-pex-binary/BUILD.bazel b/py/tests/py-pex-binary/BUILD.bazel
+index 3107a127..b0b75199 100644
+--- a/py/tests/py-pex-binary/BUILD.bazel
++++ b/py/tests/py-pex-binary/BUILD.bazel
+@@ -1,5 +1,8 @@
+ load("@aspect_bazel_lib//lib:testing.bzl", "assert_contains")
+ load("//py:defs.bzl", "py_binary", "py_pex_binary")
++load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_binary")
++load("@bazel_skylib//rules:build_test.bzl", "build_test")
++
+ 
+ # Test that both single-file modules (six) and multi-file modules (cowsay) work with py_pex_binary.
+ py_binary(
+@@ -32,3 +35,40 @@ assert_contains(
+     actual = "print_modules_pex.out",
+     expected = "Mooo!,cowsay-6.1/cowsay/__init__.py,six-1.16.0/six.py",
+ )
++
++# Cross-compilation can work.
++
++# At least one of these platforms is a cross-compile, no matter where we run.
++platform(
++    name = "arm64_macos",
++    constraint_values = [
++        "@platforms//os:macos",
++        "@platforms//cpu:aarch64",
++    ],
++)
++platform(
++    name = "amd64_linux",
++    constraint_values = [
++        "@platforms//os:linux",
++        "@platforms//cpu:x86_64",
++    ],
++)
++
++platform_transition_binary(
++    name = "print_modules_pex_arm64_macos",
++    binary = ":print_modules_pex",
++    target_platform = ":arm64_macos",
++)
++platform_transition_binary(
++    name = "print_modules_pex_amd64_linux",
++    binary = ":print_modules_pex",
++    target_platform = ":amd64_linux",
++)
++
++build_test(
++    name = "cross_builds",
++    targets = [
++        ":print_modules_pex_arm64_macos",
++        ":print_modules_pex_amd64_linux",
++    ],
++)
+
+From 3127d05c1028e15a17ee461ac932281968c20904 Mon Sep 17 00:00:00 2001
+From: Peter Lobsinger <peter@tecton.ai>
+Date: Sat, 16 Aug 2025 10:09:35 -0400
+Subject: [PATCH 3/4] Downscope to just Linux as a cross-build target
+
+---
+ py/tests/py-pex-binary/BUILD.bazel | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/py/tests/py-pex-binary/BUILD.bazel b/py/tests/py-pex-binary/BUILD.bazel
+index b0b75199..29f354ff 100644
+--- a/py/tests/py-pex-binary/BUILD.bazel
++++ b/py/tests/py-pex-binary/BUILD.bazel
+@@ -36,13 +36,14 @@ assert_contains(
+     expected = "Mooo!,cowsay-6.1/cowsay/__init__.py,six-1.16.0/six.py",
+ )
+ 
+-# Cross-compilation can work.
++# Cross-compilation to Linux can work.
++# TODO(https://github.com/aspect-build/rules_py/issues/625): support arbitrary cross-compilation.
+ 
+ # At least one of these platforms is a cross-compile, no matter where we run.
+ platform(
+-    name = "arm64_macos",
++    name = "arm64_linux",
+     constraint_values = [
+-        "@platforms//os:macos",
++        "@platforms//os:linux",
+         "@platforms//cpu:aarch64",
+     ],
+ )
+@@ -55,9 +56,9 @@ platform(
+ )
+ 
+ platform_transition_binary(
+-    name = "print_modules_pex_arm64_macos",
++    name = "print_modules_pex_arm64_linux",
+     binary = ":print_modules_pex",
+-    target_platform = ":arm64_macos",
++    target_platform = ":arm64_linux",
+ )
+ platform_transition_binary(
+     name = "print_modules_pex_amd64_linux",
+@@ -68,7 +69,7 @@ platform_transition_binary(
+ build_test(
+     name = "cross_builds",
+     targets = [
+-        ":print_modules_pex_arm64_macos",
++        ":print_modules_pex_arm64_linux",
+         ":print_modules_pex_amd64_linux",
+     ],
+ )
+
+From 5a431b2bbc4ae28863edd72496cb0ca09e044128 Mon Sep 17 00:00:00 2001
+From: Peter Lobsinger <peter@tecton.ai>
+Date: Sat, 16 Aug 2025 10:15:07 -0400
+Subject: [PATCH 4/4] Fixup pre-commit
+
+---
+ py/tests/py-pex-binary/BUILD.bazel | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/py/tests/py-pex-binary/BUILD.bazel b/py/tests/py-pex-binary/BUILD.bazel
+index 29f354ff..780d2c19 100644
+--- a/py/tests/py-pex-binary/BUILD.bazel
++++ b/py/tests/py-pex-binary/BUILD.bazel
+@@ -1,8 +1,7 @@
+ load("@aspect_bazel_lib//lib:testing.bzl", "assert_contains")
+-load("//py:defs.bzl", "py_binary", "py_pex_binary")
+ load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_binary")
+ load("@bazel_skylib//rules:build_test.bzl", "build_test")
+-
++load("//py:defs.bzl", "py_binary", "py_pex_binary")
+ 
+ # Test that both single-file modules (six) and multi-file modules (cowsay) work with py_pex_binary.
+ py_binary(
+@@ -47,6 +46,7 @@ platform(
+         "@platforms//cpu:aarch64",
+     ],
+ )
++
+ platform(
+     name = "amd64_linux",
+     constraint_values = [
+@@ -60,6 +60,7 @@ platform_transition_binary(
+     binary = ":print_modules_pex",
+     target_platform = ":arm64_linux",
+ )
++
+ platform_transition_binary(
+     name = "print_modules_pex_amd64_linux",
+     binary = ":print_modules_pex",

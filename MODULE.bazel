@@ -1,0 +1,40 @@
+module(name = "pex_cross_demo")
+
+bazel_dep(name = "aspect_rules_py", version = "1.6.0")
+bazel_dep(name = "bazel_lib", version = "3.0.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_pycross", version = "0.8.0")
+bazel_dep(name = "rules_python", version = "1.4.0")
+
+# PR 618 (https://github.com/aspect-build/rules_py/pull/618) required for cross builds to work at all.
+single_version_override(
+  module_name = "aspect_rules_py",
+  patch_strip=1,
+  patches = [
+    ":pr618.patch"
+  ],
+)
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# Pull PDM tool to bootstrap lockfile; specific to x86 Linux.
+http_archive(
+  name = "pdm",
+  urls = [
+    "https://github.com/pdm-project/pdm/releases/download/2.26.1/pdm-2.26.1-x86_64-unknown-linux-gnu.tar.gz",
+  ],
+  sha256 = "fb10a5c57b5c16982e7418a437052a85c8022487c0d6ad4f221e0aef48d0ed69",
+  build_file_content = """
+exports_files(["pdm"])
+""",
+)
+
+lock_import = use_extension("@rules_pycross//pycross/extensions:lock_import.bzl", "lock_import")
+lock_import.import_pdm(
+    lock_file = "//:pdm.lock",
+    project_file = "//:pyproject.toml",
+    repo = "pdm_deps",
+)
+
+lock_repos = use_extension("@rules_pycross//pycross/extensions:lock_repos.bzl", "lock_repos")
+use_repo(lock_repos, "pdm_deps")

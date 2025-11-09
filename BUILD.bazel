@@ -1,0 +1,71 @@
+load("@aspect_rules_py//py:defs.bzl", "py_binary", "py_pex_binary")
+load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup") 
+
+py_binary(
+  name = "example_bin",
+  srcs = ["example.py"],
+  deps = ["@pdm_deps//:pendulum"],
+)
+
+py_pex_binary(
+    name = "example_pex",
+    binary = ":example_bin",
+)
+
+platform(
+  name = "linux_arm",
+  constraint_values = [
+    "@platforms//os:linux",
+    "@platforms//cpu:aarch64",
+  ],
+)
+
+platform(
+  name = "linux_x86",
+  constraint_values = [
+    "@platforms//os:linux",
+    "@platforms//cpu:x86_64",
+  ],
+)
+
+platform(
+  name = "macos_arm",
+  constraint_values = [
+    "@platforms//os:macos",
+    "@platforms//cpu:aarch64",
+  ],
+)
+
+platform(
+  name = "windows_x86",
+  constraint_values = [
+    "@platforms//os:windows",
+    "@platforms//cpu:x86_64",
+  ],
+)
+
+# Provide explicit cross-build targets.
+#
+# Note: PEX builds targetting Windows are broken (but all other builds work):
+# ❯ bazel build :example_pex_windows_x86
+# ERROR: error loading package '@@aspect_rules_py+//py/tools/venv_bin': at /home/plobsing/.cache/bazel/_bazel_plobsing/444137bc054767f0da891a301ceff9e3/external/aspect_rules_py+/tools/release/defs.bzl:5:6: Unable to find package for @@[unknown repo 'rules_rust' requested from @@aspect_rules_py+]//rust:defs.bzl: The repository '@@[unknown repo 'rules_rust' requested from @@aspect_rules_py+]' could not be resolved: No repository visible as '@rules_rust' from repository '@@aspect_rules_py+'.
+# ERROR: /home/plobsing/.cache/bazel/_bazel_plobsing/444137bc054767f0da891a301ceff9e3/external/aspect_rules_py+/py/private/toolchain/venv/BUILD.bazel:3:17: error loading package '@@aspect_rules_py+//py/tools/venv_bin': at /home/plobsing/.cache/bazel/_bazel_plobsing/444137bc054767f0da891a301ceff9e3/external/aspect_rules_py+/tools/release/defs.bzl:5:6: Unable to find package for @@[unknown repo 'rules_rust' requested from @@aspect_rules_py+]//rust:defs.bzl: The repository '@@[unknown repo 'rules_rust' requested from @@aspect_rules_py+]' could not be resolved: No repository visible as '@rules_rust' from repository '@@aspect_rules_py+'. and referenced by '@@aspect_rules_py+//py/private/toolchain/venv:venv_toolchain_source'
+# ERROR: Analysis of target '//:example_pex_windows_x86' failed; build aborted: Analysis failed
+# INFO: Elapsed time: 0.399s, Critical Path: 0.00s
+# INFO: 1 process: 1 internal.
+# ERROR: Build did NOT complete successfully
+# FAILED: 
+#     Fetching repository @@rules_python++python+python_3_11_x86_64-pc-windows-msvc; starting
+[
+  platform_transition_filegroup(
+    name = "example_pex_{platform}".format(platform=platform),
+    target_platform = ":{platform}".format(platform=platform),
+    srcs = [":example_pex"],
+  )
+  for platform in [
+    "linux_arm",
+    "linux_x86",
+    "macos_arm",
+    "windows_x86",
+  ]
+]
